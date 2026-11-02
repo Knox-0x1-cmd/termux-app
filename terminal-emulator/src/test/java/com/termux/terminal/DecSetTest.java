@@ -56,6 +56,8 @@ public class DecSetTest extends TerminalTestCase {
 
 		mTerminal.paste("\033ab\033cd\033");
 		assertEquals("Pasting an escape character should not input it", "\033[200~abcd\033[201~", mOutput.getOutputAndClear());
+		mTerminal.paste("\033");
+		assertEquals("Pasting only an escape character should output nothing", "", mOutput.getOutputAndClear());
 		mTerminal.paste("\u0081ab\u0081cd\u009F");
 		assertEquals("Pasting C1 control codes should not input it", "\033[200~abcd\033[201~", mOutput.getOutputAndClear());
 

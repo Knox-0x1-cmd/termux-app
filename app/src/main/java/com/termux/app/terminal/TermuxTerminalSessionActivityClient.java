@@ -522,6 +522,11 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
         TerminalSession session = mActivity.getCurrentSession();
         if (session != null && session.getEmulator() != null) {
             mActivity.getWindow().getDecorView().setBackgroundColor(session.getEmulator().mColors.mCurrentColors[TextStyle.COLOR_INDEX_BACKGROUND]);
+        } else {
+            // No session exists yet (for example when Termux is launched from a widget or a
+            // URL/file handler). Use the loaded color scheme instead of leaving the default
+            // black window background. See issues #4420 and #4849.
+            mActivity.getWindow().getDecorView().setBackgroundColor(TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND]);
         }
     }
 

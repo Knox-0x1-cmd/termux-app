@@ -57,10 +57,15 @@ final class ByteQueue {
      * Returns whether the output was totally written, false if it was closed before.
      */
     public boolean write(byte[] buffer, int offset, int lengthToWrite) {
-        if (lengthToWrite + offset > buffer.length) {
-            throw new IllegalArgumentException("length + offset > buffer.length");
-        } else if (lengthToWrite <= 0) {
-            throw new IllegalArgumentException("length <= 0");
+        if (offset < 0 || lengthToWrite < 0 || offset > buffer.length - lengthToWrite) {
+            throw new IllegalArgumentException("Invalid offset or length: offset=" + offset + ", length=" + lengthToWrite + ", buffer.length=" + buffer.length);
+        } else if (lengthToWrite == 0) {
+            // Nothing to write, but this is not an error. Callers may legitimately
+            // end up with an empty buffer, e.g. when pasting text that only
+            // contained characters removed by TerminalEmulator.paste().
+            synchronized (this) {
+                return mOpen;
+            }
         }
 
         final int bufferLength = mBuffer.length;

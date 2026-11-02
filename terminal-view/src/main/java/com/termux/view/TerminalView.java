@@ -385,12 +385,17 @@ public final class TerminalView extends View {
                     char firstChar = text.charAt(i);
                     int codePoint;
                     if (Character.isHighSurrogate(firstChar)) {
-                        if (++i < textLengthInChars) {
-                            codePoint = Character.toCodePoint(firstChar, text.charAt(i));
+                        if (i + 1 < textLengthInChars && Character.isLowSurrogate(text.charAt(i + 1))) {
+                            codePoint = Character.toCodePoint(firstChar, text.charAt(++i));
                         } else {
-                            // At end of string, with no low surrogate following the high:
+                            // At end of string, or followed by a non-low-surrogate, with no valid
+                            // low surrogate following the high one.
                             codePoint = TerminalEmulator.UNICODE_REPLACEMENT_CHAR;
                         }
+                    } else if (Character.isLowSurrogate(firstChar)) {
+                        // A lone low surrogate is not a valid Unicode code point. Some IMEs send
+                        // these when committing emoji that the device does not support.
+                        codePoint = TerminalEmulator.UNICODE_REPLACEMENT_CHAR;
                     } else {
                         codePoint = firstChar;
                     }

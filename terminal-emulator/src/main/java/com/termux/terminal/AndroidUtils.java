@@ -2,7 +2,6 @@ package com.termux.terminal;
 
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.Properties;
 import java.util.regex.Matcher;
@@ -28,31 +27,31 @@ public class AndroidUtils {
         // multiline values will be ignored
         Pattern propertiesPattern = Pattern.compile("^\\[([^]]+)]: \\[(.+)]$");
 
+        Process process = null;
         try {
-            Process process = new ProcessBuilder()
+            process = new ProcessBuilder()
                 .command("/system/bin/getprop")
                 .redirectErrorStream(true)
                 .start();
 
-            InputStream inputStream = process.getInputStream();
-            BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(inputStream));
-            String line, key, value;
+            try (BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line, key, value;
 
-            while ((line = bufferedReader.readLine()) != null) {
-                Matcher matcher = propertiesPattern.matcher(line);
-                if (matcher.matches()) {
-                    key = matcher.group(1);
-                    value = matcher.group(2);
-                    if (key != null && value != null && !key.isEmpty() && !value.isEmpty())
-                        systemProperties.put(key, value);
+                while ((line = bufferedReader.readLine()) != null) {
+                    Matcher matcher = propertiesPattern.matcher(line);
+                    if (matcher.matches()) {
+                        key = matcher.group(1);
+                        value = matcher.group(2);
+                        if (key != null && value != null && !key.isEmpty() && !value.isEmpty())
+                            systemProperties.put(key, value);
+                    }
                 }
             }
 
-            bufferedReader.close();
-            process.destroy();
-
         } catch (IOException e) {
             Logger.logStackTraceWithMessage(null, logTag, "Failed to get run \"/system/bin/getprop\" to get system properties.", e);
+        } finally {
+            if (process != null) process.destroy();
         }
 
         //for (String key : systemProperties.stringPropertyNames()) {

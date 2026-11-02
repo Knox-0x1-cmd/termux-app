@@ -3544,6 +3544,10 @@ public final class TerminalEmulator {
         // Second: Replace all newlines (\n) or CRLF (\r\n) with carriage returns (\r).
         text = text.replaceAll("\r?\n", "\r");
 
+        // Nothing left to send (e.g. the pasted text was only an escape character).
+        // Avoid writing zero-length data, which would otherwise reach ByteQueue.write().
+        if (text.isEmpty()) return;
+
         // Then: Implement bracketed paste mode if enabled:
         boolean bracketed = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
         if (bracketed) mSession.write("\033[200~");

@@ -69,6 +69,10 @@ public class TermuxOpenReceiver extends BroadcastReceiver {
                 context.startActivity(urlIntent);
             } catch (ActivityNotFoundException e) {
                 Logger.logError(LOG_TAG, "No app handles the url " + data);
+            } catch (SecurityException e) {
+                // The resolved activity may not be exported to Termux. Do not let a bad
+                // intent crash the whole app. See issue #3283.
+                Logger.logError(LOG_TAG, "Permission denied when opening the url " + data + ": " + e.getMessage());
             }
             return;
         }
@@ -121,6 +125,8 @@ public class TermuxOpenReceiver extends BroadcastReceiver {
             context.startActivity(sendIntent);
         } catch (ActivityNotFoundException e) {
             Logger.logError(LOG_TAG, "No app handles the url " + data);
+        } catch (SecurityException e) {
+            Logger.logError(LOG_TAG, "Permission denied when opening the url " + data + ": " + e.getMessage());
         }
     }
 

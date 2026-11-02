@@ -26,6 +26,9 @@ import com.termux.shared.notification.NotificationUtils;
 import com.termux.shared.shell.command.ExecutionCommand;
 import com.termux.shared.shell.command.ExecutionCommand.Runner;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 /**
  * A service that receives {@link RUN_COMMAND_SERVICE#ACTION_RUN_COMMAND} intent from third party apps and
  * plugins that contains info on command execution and forwards the extras to {@link TermuxService}
@@ -55,6 +58,14 @@ public class RunCommandService extends Service {
     }
 
     @Override
+    public void onDestroy() {
+        mExecutor.shutdownNow();
+        super.onDestroy();
+    }
+
+    private final ExecutorService mExecutor = Executors.newSingleThreadExecutor(r -> new Thread(r, "RunCommandService"));
+
+    @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Logger.logDebug(LOG_TAG, "onStartCommand");
 
@@ -63,6 +74,14 @@ public class RunCommandService extends Service {
         // Run again in case service is already started and onCreate() is not called
         runStartForeground();
 
+        // Parsing the intent, checking the allow-external-apps property (SharedPreferences) and
+        // resolving the executable path all touch disk and must not run on the main thread.
+        mExecutor.execute(() -> processStartCommand(intent));
+
+        return Service.START_NOT_STICKY;
+    }
+
+    private int processStartCommand(Intent intent) {
         Logger.logVerboseExtended(LOG_TAG, "Intent Received:\n" + IntentUtils.getIntentString(intent));
 
         ExecutionCommand executionCommand = new ExecutionCommand();

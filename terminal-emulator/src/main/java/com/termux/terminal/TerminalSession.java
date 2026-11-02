@@ -183,7 +183,10 @@ public final class TerminalSession extends TerminalOutput {
     public void writeCodePoint(boolean prependEscape, int codePoint) {
         if (codePoint > 1114111 || (codePoint >= 0xD800 && codePoint <= 0xDFFF)) {
             // 1114111 (= 2**16 + 1024**2 - 1) is the highest code point, [0xD800,0xDFFF] is the surrogate range.
-            throw new IllegalArgumentException("Invalid code point: " + codePoint);
+            // Invalid code points can be produced by some IMEs (for example when committing an
+            // emoji that the device does not support), so replace them with U+FFFD instead of
+            // crashing the whole app. See https://github.com/termux/termux-app/issues/3242.
+            codePoint = 0xFFFD;
         }
 
         int bufferPosition = 0;

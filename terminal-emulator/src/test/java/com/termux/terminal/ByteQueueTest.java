@@ -46,6 +46,29 @@ public class ByteQueueTest extends TestCase {
 		assertFalse(q.write(new byte[]{1, 2, 3}, 0, 3));
 	}
 
+	public void testZeroLengthWriteIsNoOp() throws Exception {
+		ByteQueue q = new ByteQueue(10);
+		assertTrue(q.write(new byte[0], 0, 0));
+		assertTrue(q.write(new byte[]{1, 2, 3}, 0, 0));
+		assertEquals(0, q.read(new byte[10], false));
+	}
+
+	public void testInvalidWriteArguments() throws Exception {
+		ByteQueue q = new ByteQueue(10);
+		try {
+			q.write(new byte[]{1, 2, 3}, 0, -1);
+			fail("Expected IllegalArgumentException for negative length");
+		} catch (IllegalArgumentException e) {
+			// Expected.
+		}
+		try {
+			q.write(new byte[]{1, 2, 3}, 2, 2);
+			fail("Expected IllegalArgumentException for offset + length > buffer.length");
+		} catch (IllegalArgumentException e) {
+			// Expected.
+		}
+	}
+
 	public void testReadNonBlocking() throws Exception {
 		ByteQueue q = new ByteQueue(10);
 		assertEquals(0, q.read(new byte[128], false));

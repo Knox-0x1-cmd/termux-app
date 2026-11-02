@@ -42,6 +42,9 @@ public class FileReceiverActivity extends AppCompatActivity {
     static final String EDITOR_PROGRAM = TermuxConstants.TERMUX_HOME_DIR_PATH + "/bin/termux-file-editor";
     static final String URL_OPENER_PROGRAM = TermuxConstants.TERMUX_HOME_DIR_PATH + "/bin/termux-url-opener";
 
+    /** Maximum length of a file name accepted from a shared intent or the name dialog. */
+    static final int MAX_FILE_NAME_LENGTH = 255;
+
     /**
      * If the activity should be finished when the name input dialog is dismissed. This is disabled
      * before showing an error dialog, since the act of showing the error dialog will cause the
@@ -53,6 +56,29 @@ public class FileReceiverActivity extends AppCompatActivity {
     private static final String API_TAG = TermuxConstants.TERMUX_APP_NAME + "FileReceiver";
 
     private static final String LOG_TAG = "FileReceiverActivity";
+
+    /**
+     * Convert a shared subject/display name into a safe file name. Only the basename is kept so
+     * that a malicious or buggy sender cannot escape the downloads directory, and very long names
+     * are truncated because they can crash the name dialog and are rejected by the filesystem.
+     */
+    static String sanitizeFileName(String fileName) {
+        if (fileName == null) return null;
+
+        int slash = Math.max(fileName.lastIndexOf('/'), fileName.lastIndexOf('\\'));
+        if (slash >= 0) fileName = fileName.substring(slash + 1);
+
+        if (fileName.isEmpty() || ".".equals(fileName) || "..".equals(fileName)) return null;
+
+        if (fileName.length() > MAX_FILE_NAME_LENGTH) {
+            int end = MAX_FILE_NAME_LENGTH;
+            // Do not split a surrogate pair in the middle.
+            if (Character.isHighSurrogate(fileName.charAt(end - 1))) end--;
+            fileName = fileName.substring(0, end);
+        }
+
+        return fileName;
+    }
 
     static boolean isSharedTextAnUrl(String sharedText) {
         if (sharedText == null || sharedText.isEmpty()) return false;
@@ -127,104 +153,160 @@ public class FileReceiverActivity extends AppCompatActivity {
 
     void showErrorDialogAndQuit(String message) {
         mFinishOnDismissNameDialog = false;
-        MessageDialogUtils.showMessage(this,
-            API_TAG, message,
-            null, (dialog, which) -> finish(),
-            null, null,
-            dialog -> finish());
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) return;
+            MessageDialogUtils.showMessage(this,
+                API_TAG, message,
+                null, (dialog, which) -> finish(),
+                null, null,
+                dialog -> finish());
+        });
     }
 
     void handleContentUri(@NonNull final Uri uri, String subjectFromIntent) {
-        try {
-            Logger.logVerbose(LOG_TAG, "uri: \"" + uri + "\", path: \"" + uri.getPath() + "\", fragment: \"" + uri.getFragment() + "\"");
+        // ContentResolver#query() and #openInputStream() may block on the provider, remote
+        // storage or account services, so never run them on the UI thread.
+        new Thread(() -> {
+            try {
+                Logger.logVerbose(LOG_TAG, "uri: \"" + uri + "\", path: \"" + uri.getPath() + "\", fragment: \"" + uri.getFragment() + "\"");
 
-            String attachmentFileName = null;
+                String attachmentFileName = null;
 
-            String[] projection = new String[]{OpenableColumns.DISPLAY_NAME};
-            try (Cursor c = getContentResolver().query(uri, projection, null, null, null)) {
-                if (c != null && c.moveToFirst()) {
-                    final int fileNameColumnId = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                    if (fileNameColumnId >= 0) attachmentFileName = c.getString(fileNameColumnId);
+                String[] projection = new String[]{OpenableColumns.DISPLAY_NAME};
+                try (Cursor c = getContentResolver().query(uri, projection, null, null, null)) {
+                    if (c != null && c.moveToFirst()) {
+                        final int fileNameColumnId = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                        if (fileNameColumnId >= 0) attachmentFileName = c.getString(fileNameColumnId);
+                    }
                 }
+
+                if (attachmentFileName == null) attachmentFileName = subjectFromIntent;
+                if (attachmentFileName == null) attachmentFileName = UriUtils.getUriFileBasename(uri, true);
+                attachmentFileName = sanitizeFileName(attachmentFileName);
+                if (attachmentFileName == null) attachmentFileName = "termux-file";
+
+                final InputStream in = getContentResolver().openInputStream(uri);
+                final String resolvedFileName = attachmentFileName;
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        closeQuietly(in);
+                        return;
+                    }
+                    promptNameAndSave(in, resolvedFileName);
+                });
+            } catch (Exception e) {
+                showErrorDialogAndQuit("Unable to handle shared content:\n\n" + e.getMessage());
+                Logger.logStackTraceWithMessage(LOG_TAG, "handleContentUri(uri=" + uri + ") failed", e);
             }
+        }, "FileReceiverContentUri").start();
+    }
 
-            if (attachmentFileName == null) attachmentFileName = subjectFromIntent;
-            if (attachmentFileName == null) attachmentFileName = UriUtils.getUriFileBasename(uri, true);
-
-            InputStream in = getContentResolver().openInputStream(uri);
-            promptNameAndSave(in, attachmentFileName);
-        } catch (Exception e) {
-            showErrorDialogAndQuit("Unable to handle shared content:\n\n" + e.getMessage());
-            Logger.logStackTraceWithMessage(LOG_TAG, "handleContentUri(uri=" + uri + ") failed", e);
+    private static void closeQuietly(InputStream in) {
+        if (in == null) return;
+        try {
+            in.close();
+        } catch (IOException ignored) {
         }
     }
 
+    interface FileSaveCallback {
+        void onFileSaved(File outFile);
+    }
+
     void promptNameAndSave(final InputStream in, final String attachmentFileName) {
-        TextInputDialogUtils.textInput(this, R.string.title_file_received, attachmentFileName,
+        // The dialog is dismissed after a button is clicked, so the dismiss listener must not
+        // close the stream once a save has been started. saveStreamWithName() closes it instead.
+        final boolean[] saveStarted = {false};
+        final String initialFileName = sanitizeFileName(attachmentFileName);
+        TextInputDialogUtils.textInput(this, R.string.title_file_received, initialFileName,
             R.string.action_file_received_edit, text -> {
-                File outFile = saveStreamWithName(in, text);
-                if (outFile == null) return;
+                saveStarted[0] = true;
+                saveStreamWithNameAsync(in, text, outFile -> {
+                    if (outFile == null) return;
 
-                final File editorProgramFile = new File(EDITOR_PROGRAM);
-                if (!editorProgramFile.isFile()) {
-                    showErrorDialogAndQuit("The following file does not exist:\n$HOME/bin/termux-file-editor\n\n"
-                        + "Create this file as a script or a symlink - it will be called with the received file as only argument.");
-                    return;
-                }
+                    final File editorProgramFile = new File(EDITOR_PROGRAM);
+                    if (!editorProgramFile.isFile()) {
+                        showErrorDialogAndQuit("The following file does not exist:\n$HOME/bin/termux-file-editor\n\n"
+                            + "Create this file as a script or a symlink - it will be called with the received file as only argument.");
+                        return;
+                    }
 
-                // Do this for the user if necessary:
-                //noinspection ResultOfMethodCallIgnored
-                editorProgramFile.setExecutable(true);
+                    // Do this for the user if necessary:
+                    //noinspection ResultOfMethodCallIgnored
+                    editorProgramFile.setExecutable(true);
 
-                final Uri scriptUri = UriUtils.getFileUri(EDITOR_PROGRAM);
+                    final Uri scriptUri = UriUtils.getFileUri(EDITOR_PROGRAM);
 
-                Intent executeIntent = new Intent(TERMUX_SERVICE.ACTION_SERVICE_EXECUTE, scriptUri);
-                executeIntent.setClass(FileReceiverActivity.this, TermuxService.class);
-                executeIntent.putExtra(TERMUX_SERVICE.EXTRA_ARGUMENTS, new String[]{outFile.getAbsolutePath()});
-                startService(executeIntent);
-                finish();
+                    Intent executeIntent = new Intent(TERMUX_SERVICE.ACTION_SERVICE_EXECUTE, scriptUri);
+                    executeIntent.setClass(FileReceiverActivity.this, TermuxService.class);
+                    executeIntent.putExtra(TERMUX_SERVICE.EXTRA_ARGUMENTS, new String[]{outFile.getAbsolutePath()});
+                    startService(executeIntent);
+                    finish();
+                });
             },
             R.string.action_file_received_open_directory, text -> {
-                if (saveStreamWithName(in, text) == null) return;
+                saveStarted[0] = true;
+                saveStreamWithNameAsync(in, text, outFile -> {
+                    if (outFile == null) return;
 
-                Intent executeIntent = new Intent(TERMUX_SERVICE.ACTION_SERVICE_EXECUTE);
-                executeIntent.putExtra(TERMUX_SERVICE.EXTRA_WORKDIR, TERMUX_RECEIVEDIR);
-                executeIntent.setClass(FileReceiverActivity.this, TermuxService.class);
-                startService(executeIntent);
-                finish();
+                    Intent executeIntent = new Intent(TERMUX_SERVICE.ACTION_SERVICE_EXECUTE);
+                    executeIntent.putExtra(TERMUX_SERVICE.EXTRA_WORKDIR, TERMUX_RECEIVEDIR);
+                    executeIntent.setClass(FileReceiverActivity.this, TermuxService.class);
+                    startService(executeIntent);
+                    finish();
+                });
             },
-            android.R.string.cancel, text -> finish(), dialog -> {
+            android.R.string.cancel, text -> {
+                closeQuietly(in);
+                finish();
+            }, dialog -> {
+                if (!saveStarted[0]) closeQuietly(in);
                 if (mFinishOnDismissNameDialog) finish();
             });
+    }
+
+    void saveStreamWithNameAsync(final InputStream in, final String attachmentFileName, final FileSaveCallback callback) {
+        new Thread(() -> {
+            final File outFile = saveStreamWithName(in, attachmentFileName);
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                callback.onFileSaved(outFile);
+            });
+        }, "FileReceiverSaveFile").start();
     }
 
     public File saveStreamWithName(InputStream in, String attachmentFileName) {
         File receiveDir = new File(TERMUX_RECEIVEDIR);
 
-        if (DataUtils.isNullOrEmpty(attachmentFileName)) {
-            showErrorDialogAndQuit("File name cannot be null or empty");
-            return null;
-        }
-
-        if (!receiveDir.isDirectory() && !receiveDir.mkdirs()) {
-            showErrorDialogAndQuit("Cannot create directory: " + receiveDir.getAbsolutePath());
-            return null;
-        }
-
         try {
-            final File outFile = new File(receiveDir, attachmentFileName);
-            try (FileOutputStream f = new FileOutputStream(outFile)) {
-                byte[] buffer = new byte[4096];
-                int readBytes;
-                while ((readBytes = in.read(buffer)) > 0) {
-                    f.write(buffer, 0, readBytes);
-                }
+            attachmentFileName = sanitizeFileName(attachmentFileName);
+            if (DataUtils.isNullOrEmpty(attachmentFileName)) {
+                showErrorDialogAndQuit("File name cannot be null or empty");
+                return null;
             }
-            return outFile;
-        } catch (IOException e) {
-            showErrorDialogAndQuit("Error saving file:\n\n" + e);
-            Logger.logStackTraceWithMessage(LOG_TAG, "Error saving file", e);
-            return null;
+
+            if (!receiveDir.isDirectory() && !receiveDir.mkdirs()) {
+                showErrorDialogAndQuit("Cannot create directory: " + receiveDir.getAbsolutePath());
+                return null;
+            }
+
+            try {
+                final File outFile = new File(receiveDir, attachmentFileName);
+                try (FileOutputStream f = new FileOutputStream(outFile)) {
+                    byte[] buffer = new byte[4096];
+                    int readBytes;
+                    while ((readBytes = in.read(buffer)) > 0) {
+                        f.write(buffer, 0, readBytes);
+                    }
+                }
+                return outFile;
+            } catch (IOException e) {
+                showErrorDialogAndQuit("Error saving file:\n\n" + e);
+                Logger.logStackTraceWithMessage(LOG_TAG, "Error saving file", e);
+                return null;
+            }
+        } finally {
+            closeQuietly(in);
         }
     }
 
